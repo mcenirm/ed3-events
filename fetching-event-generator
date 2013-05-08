@@ -1,0 +1,119 @@
+#!/bin/bash
+
+usage () {
+  cat <<-EOF
+	Usage: $0 CONFIG ...
+	    Fetch a feed, convert it to CAP messages, and post them to ED3.
+	    The CONFIG files are read in order and must define:
+	      CAP_LISTENER_URL  URL to the CAP listener
+	      GAZETEER_URL      URL to the simple gazetter service
+	      FIX_CAP_XSLT      path to an XSLT file that fixes a CAP
+	                        message that provides no lat/lon
+	      FEED_URL          URL to the feed to fetch
+	      FEED_TO_CAP_XSLT  path to an XSLT file that converts the
+	                        feed into a sequence of CAP messages
+	                        separated by ASCII 127 (DEL)
+	EOF
+}
+
+set -e
+set -u
+
+if [ $# -lt 1 ]
+then
+  usage >&2
+  exit 1
+fi
+
+#
+# Check configuration
+#
+
+for config in "$1"
+do
+  . "$config"
+done
+
+something_missing=false
+for var in CAP_LISTENER_URL GAZETEER_URL FEED_URL FEED_TO_CAP_XSLT
+do
+  if [ -z "${!var:+xxx}" ]
+  then
+    echo "$var needs a value" >&2
+    something_missing=true
+  fi
+done
+if $something_missing
+then
+  exit 1
+fi
+
+#
+# Define work file locations
+#
+
+prog=$(basename $0 .bash)
+TMPDIR=${TMPDIR:-/tmp}
+tmpd=$TMPDIR/$prog.$EUID #$(mktemp --tmpdir --directory tmp.$prog.XXXXXXXXXX)
+mkdir -p "$tmpd"
+copy=$tmpd/$(date +%s).$(printf '%s' "$FEED_URL" | md5sum | awk '{print $1}')
+copyurl=$copy..url
+copyhdr=$copy..hdr
+copytime=$copy..time
+caps=$copy.caps
+
+#
+# Fetch the $FEED_URL
+#
+
+printf > "$copyurl" '%s\n' "$FEED_URL"
+/usr/bin/time --portability --output="$copytime" \
+    curl \
+        --remote-time \
+        --silent \
+        --show-error \
+        --compressed \
+        --dump-header "$copyhdr" \
+        --output "$copy" \
+        "$FEED_URL"
+
+#
+# Convert feed into CAP messages with separator
+#
+
+xsltproc --output "$caps" "$FEED_TO_CAP_XSLT" "$copy"
+
+if ! [ -s "$caps" ]
+then
+  # no CAP entries
+  exit
+fi
+
+#
+# Post CAP messages to CAP listener
+#
+
+capindex=1
+while read -r -d $'\177' capmessage
+do
+  capfile=$copy.cap.$capindex
+  printf > "$capfile" '%s' "$capmessage"
+  xmllint --noout --nonet "$capfile" || break
+  capfix=$capfile.fixed
+  xsltproc --stringparam gazurl "$GAZETEER_URL" --output "$capfix" "$FIX_CAP_XSLT" "$capfile"
+  capurl=$capfix..url
+  printf > "$capurl" '%s\n' "$CAP_LISTENER_URL"
+  caphdr=$capfix..hdr
+  capresponse=$capfix..response
+  captime=$capfix..time
+  /usr/bin/time --portability --output="$captime" \
+      curl \
+          --silent \
+          --show-error \
+          --dump-header "$caphdr" \
+          --output "$capresponse" \
+          --upload-file "$capfix" \
+          "$CAP_LISTENER_URL"
+  let capindex++
+done < "$caps"
+
