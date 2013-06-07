@@ -29,7 +29,7 @@ fi
 # Check configuration
 #
 
-for config in "$1"
+for config in "$@"
 do
   . "$config"
 done
