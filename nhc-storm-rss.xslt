@@ -87,6 +87,12 @@
       <instruction/>
       -->
       <parameter>
+        <valueName>NHC Type</valueName>
+        <value>
+          <xsl:value-of select='nhc:Cyclone/nhc:type'/>
+        </value>
+      </parameter>
+      <parameter>
         <valueName>Pressure</valueName>
         <value>
           <xsl:value-of select='nhc:Cyclone/nhc:pressure'/>
